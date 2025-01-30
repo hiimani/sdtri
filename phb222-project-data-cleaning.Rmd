@@ -1,0 +1,110 @@
+---
+title: 'PHB 222 Final Project: Initial Data Exploration'
+author: "Himani Yalamaddi"
+date: "2025-01-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+# read in excel data (facilities info)
+library(readxl)
+
+# api packages
+library(httr)
+library(jsonlite)
+
+# to experiment with using census api 
+# (optional; i still need to get an API key)
+library(censusapi)
+```
+
+## data sources / import all data 
+
+**data sources**: 
+
+1. tri basic plus data (2023, file #4): https://www.epa.gov/toxics-release-inventory-tri-program/tri-basic-plus-data-files-calendar-years-1987-present 
+
+2. census tract level demograph info for sd county (2020): https://data.census.gov/table/DECENNIALDP2020.DP1?g=040XX00US06_050XX00US06073$1400000&d=DEC%20Demographic%20Profile 
+
+3. fcc area and census conversion API: https://geo.fcc.gov/api/census/. 
+
+*note about census blocks: "block_fips" is 15 digits b/c it includes an additional 4-digit "block" (more detailed) code. we only want the first 11 digits, which identify census tracts, bc census blocks may be too small of a unit to be useful for us (while census tracts usually aim to be populated in some way, many census blocks have no population whatsoever, which isn't helpful for us). in addition, our demographic info uses 11-digit census tract IDs, so we'll use tracts as our unit of measurement.*
+
+```{r, warning = F}
+# 1. toxics release inventory: facilities data (2023)
+facilities <- read_excel("data/US_4_2023_excel.xlsx")
+facilities_SD <- facilities %>% filter(`9. STATE` == "CA" & `8. COUNTY` == "SAN DIEGO")
+# confirmed no duplicates + and no NA values in either latitude or longitude information
+
+# 2. get demographic (census) data
+demographics <- read.csv("data/census_2020_sd.csv")
+
+# 3. get census tract IDs for each of the above facilities using lat/long coords!
+facility_tract_IDs <- vector("list", nrow(facilities_SD))
+for (i in 1:nrow(facilities_SD)) {
+  latitude <- facilities_SD$`65. LATITUDE`[i]
+  longitude <- facilities_SD$`66. LONGITUDE`[i]
+  result <- GET("https://geo.fcc.gov/api/census/area", 
+           query = list(lat = latitude, lon = longitude, 
+                        censusYear = 2020, format="json"))
+  facility_tract_IDs[[i]] <- fromJSON(rawToChar(result$content))[[2]][["block_fips"]]
+}
+``` 
+
+## merge and do preliminary cleanup of all data 
+
+```{r}
+# extract all unique census tract ids from census block ids:
+facility_tracts <- lapply(facility_tract_IDs, substr, start = 1, stop = 11)
+final_tracts <- table(unlist(facility_tracts))
+
+# note that three facilities are in 2 census tracts?: 
+### lapply(facility_tract_IDs, unique)
+# not 100% sure how this is possible -- will look into it
+# for now, i included all tracts
+
+# create variable in demographics table for facility count in that tract
+# note that most will be "0"; this is kind of bad!
+# let's create a map to help explain the relationship better!
+
+dem <- demographics[-1, ] # remove california-wide stats 
+dem$Geography <- substr(dem$Geography, start = 10, stop = 20) # clean geoid
+
+# first, make sure all of our facilities are in known tracts: GOOD
+# all(unlist(facility_tracts) %in% dem$Geography)
+
+# create variable in "dem", our final "full" dataset:
+dem$Facility_Binary <- dem$Geography %in% unlist(facility_tracts)
+dem$Facility_Counts <- ifelse(dem$Facility_Binary, final_tracts[dem$Geography], 0)
+``` 
+
+
+## first looks: 
+
+in total, it looks like we have around 36 "successes" out of 737 census tracts; this will likely limit the number of variables that we can include in our model to about 2 to satisfy the "rule of thumb" 15 successful observations per variable. **honestly, i think this is fine. the papers that we're comparing to treated this mostly as an association study; they were really only looking at 1-2 variables in their logistic model anyway? i think??? let's talk to the professor! :)**
+
+```{r}
+# get success/failure (whether there's a facility in the tract) counts
+table(dem$Facility_Binary) # ~5% success rate -- pretty low
+
+# get the # of counts in each "successful" tract: 
+final_tracts # one tract with 13: wow!
+
+# let's explore tract 06073008350 (tract 83.50), which has 13 facilities in it
+# this will print ALL AVAILABLE VARIABLES WHEN KNITTED!
+dem %>% filter(Geography == "06073008350")
+# population: 6228
+```
+
+
+## NEXT STEPS: get variables of interest (aka create ONE or TWO race/socioeconomic variables w/ scores) 
+i know there's a lot of variables in our data set -- don't worry, we won't use them all! for now, we just have *every single one of the demographics for the census tract*. we will likely only be focusing on two: 
+
+1. median household income (or another proxy for socio-economic status) 
+2. percentage of non-white population (or another proxy for race/race-based distributions). 
+
+**our next job is to create these variables and see if we find an association!**
+
