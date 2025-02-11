@@ -9,102 +9,377 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 
-# read in excel data (facilities info)
-library(readxl)
+library(readxl) # read in excel data (facilities info)
+library(janitor) # to clean up variable names automatically
 
-# api packages
+# api packages to get census boundaries from fcc area api
 library(httr)
 library(jsonlite)
 
 # to experiment with using census api 
-# (optional; i still need to get an API key)
-library(censusapi)
-```
+# (optional -- i'm having trouble getting an census API key)
+# library(censusapi)
+``` 
+
+## background 
+
+our articles of interest: 
+
+1. charleston, sc: https://ajph.aphapublications.org/doi/full/10.2105/AJPH.2012.300700
+2. atlanta, ga: https://www.mdpi.com/1660-4601/13/8/747 
 
 ## data sources / import all data 
 
 **data sources**: 
 
-1. tri basic plus data (2023, file #4): https://www.epa.gov/toxics-release-inventory-tri-program/tri-basic-plus-data-files-calendar-years-1987-present 
+1. tri basic plus data (2023, file #1a *tri-basic-plus-1a-2023-sd.csv*): https://www.epa.gov/toxics-release-inventory-tri-program/tri-basic-plus-data-files-calendar-years-1987-present 
 
-2. census tract level demograph info for sd county (2020): https://data.census.gov/table/DECENNIALDP2020.DP1?g=040XX00US06_050XX00US06073$1400000&d=DEC%20Demographic%20Profile 
+2. 2020 dicennial census demographics (*dem-dicennial-2020-sd.csv*): this contains race/ethnicity, gender, age, housing units, household information.
 
-3. fcc area and census conversion API: https://geo.fcc.gov/api/census/. 
+3. 2023 acs (american community survey) income/poverty (*income-acs2023.csv*): this contains median/mean income by households. even though census data is considered more accurate, especially at the tract level, income is only collected through the acs. (https://data.census.gov/table/ACSST1Y2023.S1901?q=Income%20and%20Poverty)
+
+4. 2023 acs (american community survey) educational attainment (*education-acs2023-sd.csv*): this file contains educational attainment or all census tract members ages 25+; male and female are distinct here (atlanta paper).
+
+5. fcc area and census conversion API: https://geo.fcc.gov/api/census/. i used this tutorial: https://www.dataquest.io/blog/r-api-tutorial/ 
+
 
 *note about census blocks: "block_fips" is 15 digits b/c it includes an additional 4-digit "block" (more detailed) code. we only want the first 11 digits, which identify census tracts, bc census blocks may be too small of a unit to be useful for us (while census tracts usually aim to be populated in some way, many census blocks have no population whatsoever, which isn't helpful for us). in addition, our demographic info uses 11-digit census tract IDs, so we'll use tracts as our unit of measurement.*
 
-```{r, warning = F}
-# 1. toxics release inventory: facilities data (2023)
-facilities <- read_excel("data/US_4_2023_excel.xlsx")
-facilities_SD <- facilities %>% filter(`9. STATE` == "CA" & `8. COUNTY` == "SAN DIEGO")
-# confirmed no duplicates + and no NA values in either latitude or longitude information
 
-# 2. get demographic (census) data
-demographics <- read.csv("data/census_2020_sd.csv")
+### get one-row-one-emission data (75 emitting facilities) 
 
-# 3. get census tract IDs for each of the above facilities using lat/long coords!
+this file contains a row for each of the *emissions* reported by tri facilities in 2023. note that one facility can emit more than one chemical. below are a few notable facilities in SD in terms of # of unique chemicals released: 
+
+1. 92113RCSND2295E: TESORO - SAN DIEGO TERMINAL	(MARATHON PETROLEUM CORP): 9 chemicals
+2. 92055MRNCRPOBOX: US MARINE CORPS MCB CAMP PENDLETON: 7 chemicals
+2. 92121FRZPN6625M: SHERWIN-WILLIAMS CO (6 chemicals) 
+
+facilities can report using either one of two forms (variable `x1_form_type`). form A is more simplistic, and the more elaborate form R is only needed if: 
+
+1. the toxic chemical is not a PBT chemical 
+2. the toxic chemical was not manufactured, processed, or otherwise used in excess of 1,000,000 pounds 
+3. the total annual amount released of the toxic chemical did not exceed 500 pounds. 
+
+link to emission-level variable documentation: https://www.epa.gov/system/files/documents/2024-09/file_type_1a_1.pdf
+
+
+```{r, warning=FALSE, message = FALSE}
+# 0. creation of tri-basic-plus-1a-2023-sd.csv from US_1a_2023.xlsx
+# read in toxics release inventory emissions data 
+# (file 1a downloaded from basic plus files):
+# emissions <- read_excel("data/US_1a_2023.xlsx")
+# emissions_SD <- emissions %>% filter(`14. FACILITY STATE` == "CA" & 
+                                      #`13. FACILITY COUNTY` == "SAN DIEGO")
+# write_csv(emissions_SD, "data/tri-basic-plus-1a-2023-sd.csv")
+
+emissions_SD <- read_csv("data/tri-basic-plus-1a-2023-sd.csv")
+
+# clean var names: replace spaces w/ "_"
+# leading x: b/c R doesn't like variable names to begin w/ numbers
+emissions_SD <- clean_names(emissions_SD)
+
+# let's isolate the names of key variables that capture emissions for future use:
+# below are some findings (and why i removed some variables)
+# all 2023
+# no trade secrets
+# all facilities in SD county/CA
+# no stream B emissions + beyond
+# no x206_total_surface_impoundments
+# no x194_total_on_site_rcra_subtitle_c_landfills_pounds
+# no x198_total_other_on_site_landfills
+# no x190_total_on_site_landfills
+# no x187_total_on_site_underground_injection
+
+emissions_SD <- emissions_SD %>% select(
+                        # facility information:
+                        x9_trifd, 
+                        x1_form_type,
+                        x10_facility_name,
+                        x71_parent_company_name,
+                        x8_date_signed,
+                        x47_latitude,
+                        x48_longitude,
+                        # chemical/emission information:
+                        x90_revision_code_1,
+                        x81_chemical_name,
+                        x84_classification, 
+                        x85_unit_of_measure,
+                        x83_elemental_metal_included,
+                        x86_hazardous_air_pollutant_haps,
+                        x87_carcinogen,
+                        x88_pfas_ind,
+                        x89_metal_ind,
+                        x109_maximum_amount_on_site, 
+                        x112_total_fugitive_air_emissions, 
+                        x116_total_stack_air_emissions, 
+                        x118_total_air_emissions, # 112 + 116
+                        x119_discharges_to_stream_a_stream_name, 
+                        x122_total_discharges_to_stream_a,
+                        x214_total_other_surface_impoundments, # one facility
+                        x218_total_other_disposal, 
+                        x220_total_on_site_land_releases, # one facility
+                        x246_total_transferred_off_site_for_disposal,
+                        x252_total_transferred_off_site_for_recycling, 
+                        x255_total_transferred_off_site_for_energy_recovery, 
+                        x263_total_transferred_off_site_for_treatment,
+                        x265_total_transferred_off_site_for_further_waste_management,
+                        x266_total_potw_transfer, # potw = publicly owned treatment works
+                        x263_total_transferred_off_site_for_treatment,
+                        x269_treated_on_site_current_year,
+                        x270_total_on_site_waste_management, 
+                        # MORE facility info, kept in case we wanted to create an interactive map:
+                        x11_facility_street, x12_facility_city,
+                        x15_facility_zip_code, x17_tribe_name, 
+                        x24_entire_facility_ind, 
+                        x25_partial_facility_ind,
+                        x26_federal_facility_ind,
+                        x27_goco_facility_ind,
+                        x41_primary_naics_code,
+                        x31_public_contact_phone, 
+                        x33_public_contact_email)
+``` 
+
+### identify "superpolluters" -- FUTURE WORK 
+
+```{r}
+# check dimensions of new emission-level data set: 
+dim(emissions_SD) # 154 emissions, 44 variables about each
+
+# explore how many unique chemicals each of the facilities reported in 2023
+table(emissions_SD$x9_trifd) # 75 total facilities
+```
+
+### create facility-level dataset to merge with census tract data 
+
+below, we create a new data set with facility information and merge it with census tract boundaries and tract-level demographics information:
+
+
+```{r}
+# 1. create a new table JUST for facility information 
+facilities_SD <- emissions_SD %>% select(x9_trifd, 
+                        #x1_form_type,
+                        x90_revision_code_1,
+                        x10_facility_name,
+                        x71_parent_company_name,
+                        x8_date_signed,
+                        x47_latitude,
+                        x48_longitude,
+                        x11_facility_street, x12_facility_city,
+                        x15_facility_zip_code, x17_tribe_name, 
+                        x24_entire_facility_ind, 
+                        x25_partial_facility_ind,
+                        x26_federal_facility_ind,
+                        x27_goco_facility_ind,
+                        x41_primary_naics_code,
+                        x31_public_contact_phone, 
+                        x33_public_contact_email) %>% 
+  group_by(x9_trifd) %>% filter(x8_date_signed == max(x8_date_signed)) %>%
+  ungroup() %>% distinct()
+
+# 2. prelim cleaning up of facilities-level data: 
+# there's one facility with everything duplicated except for contact info: "91950HNSNG61W12"
+# we'll delete one version of this at random 
+# --? FUTURE WORK; NOT NEEDED FOR CENSUS TRACT MERGING
+# emissions_SD %>% filter(x9_trifd == "91950HNSNG61W12")
+
+# emission recalculations/repeats 
+# (will deal with this later; for now i didn't care to clean this up)
+table(emissions_SD$x90_revision_code_1) 
+# 3 facilities reported RR4 (recalculations)
+# 1 facility reported RR5 (other reasons)
+
+# isolate information for some key facilities to explore
+# this one releases 9 unique chemicals!:
+emissions_SD %>% filter(x9_trifd == "92113RCSND2295E")
+``` 
+
+### get census tract/demographics information, merge, and clean 
+
+1. 2020 dicennial census demographics (*dem-dicennial-2020-sd.csv*): this contains race/ethnicity, gender, age, housing units, household information.
+
+2. 2023 acs (american community survey) income/poverty (*income-acs2023.csv*): this contains median/mean income by households. even though census data is considered more accurate, especially at the tract level, income is only collected through the acs. (https://data.census.gov/table/ACSST1Y2023.S1901?q=Income%20and%20Poverty)
+
+3. 2023 acs (american community survey) educational attainment (*education-acs2023-sd.csv*): this file contains educational attainment or all census tract members ages 25+; male and female are distinct here (atlanta paper).
+
+**FUTURE WORK**: instead of designating a census tract as a "success" if the facility is in the tract, we could take a 1 mi buffer from each of the facilities. aka: "if a tri facility's 1mi buffer is within a census tract, then we include that tract as a census tract with a tri facility." i think this would help us get more "successes." 
+
+below, we isolate a few (~30) variables in our topics of interest; not all will be used or be considered variables of interest! 
+
+
+```{r}
+# 1. read in all predictor data from census/acs data:
+# 1.1. read in demographics (2020 dicennial census, census.gov) data
+demographics <- read.csv("data/dem-dicennial-2020-sd.csv") 
+dem <- demographics[-1, ] # remove california-wide stats 
+dem <- clean_names(dem)
+dem$geography <- substr(dem$geography, start = 10, stop = 20) 
+# clean census tract ID for easy merging
+
+dem <- dem %>% select(geography,
+               # total population
+               count_race_total_population,
+               
+               # race/ethnicity information
+               percent_race_total_population_one_race_white,
+               percent_hispanic_or_latino_by_race_total_population_hispanic_or_latino,
+               percent_race_total_population_one_race_black_or_african_american, 
+               percent_race_total_population_one_race_asian,
+               percent_race_total_population_one_race_native_hawaiian_and_other_pacific_islander,
+               percent_race_total_population_one_race_american_indian_and_alaska_native,
+               percent_race_total_population_one_race_some_other_race,
+               percent_race_total_population_two_or_more_races,
+               percent_total_races_tallied_1_total_races_tallied_black_or_african_american_alone_or_in_combination_with_one_or_more_other_races, 
+               percent_total_races_tallied_1_total_races_tallied_black_or_african_american_alone_or_in_combination_with_one_or_more_other_races, 
+               percent_total_races_tallied_1_total_races_tallied_white_alone_or_in_combination_with_one_or_more_other_races,
+               
+               # housing information 
+               percent_housing_occupancy_total_housing_units_vacant_housing_units, # (used in atlanta study)
+               percent_housing_tenure_occupied_housing_units_renter_occupied_housing_units)
+
+
+# 1.2. read in income (2023 ACS, census.gov) data
+income <- read.csv("data/income-acs2023-sd.csv")
+names(income) <- income[1,] # make row 1 header
+inc <- income[-1, ] # remove first row with info
+inc <- clean_names(inc)
+inc$geography <- substr(inc$geography, start = 10, stop = 20)
+
+inc <- inc %>% select(geography,
+               # total # of households
+               estimate_households_total,
+               
+               # income in dollars
+               estimate_households_median_income_dollars,
+               estimate_households_mean_income_dollars)
+
+
+# 1.3 read in educational attainment (2023 ACS, census.gov) data
+# this is a HUGE file (771 columns), MUST be pared down before merging
+education <- read.csv("data/education-acs2023-sd.csv")
+names(education) <- education[1,] # make row 1 header
+edu <- education[-1, ] # remove first row with info
+edu <- clean_names(edu)
+edu$geography <- substr(edu$geography, start = 10, stop = 20)
+
+edu <- edu %>% select(geography,
+               # total population educational attainment
+               estimate_percent_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher, 
+               estimate_percent_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher, 
+               estimate_percent_age_by_educational_attainment_population_25_years_and_over_graduate_or_professional_degree,
+               estimate_percent_age_by_educational_attainment_population_25_years_and_over_less_than_9th_grade,
+               
+               # female population educational attainment
+               estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher, 
+               estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_graduate_or_professional_degree,
+               estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher,
+               estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_less_than_9th_grade,
+               
+               # male population educational attainment
+               estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher, 
+               estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_graduate_or_professional_degree,
+               estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher,
+               estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_less_than_9th_grade, 
+               
+               # male and female median earnings in the last 12 months (2023)
+               estimate_female_median_earnings_in_the_past_12_months_in_2023_inflation_adjusted_dollars_population_25_years_and_over_with_earnings, 
+               estimate_male_median_earnings_in_the_past_12_months_in_2023_inflation_adjusted_dollars_population_25_years_and_over_with_earnings)
+
+
+# 2. get census tracts for each of our facilities using lat/long coords!
 facility_tract_IDs <- vector("list", nrow(facilities_SD))
 for (i in 1:nrow(facilities_SD)) {
-  latitude <- facilities_SD$`65. LATITUDE`[i]
-  longitude <- facilities_SD$`66. LONGITUDE`[i]
+  latitude <- facilities_SD$x47_latitude[i]
+  longitude <- facilities_SD$x48_longitude[i]
   result <- GET("https://geo.fcc.gov/api/census/area", 
            query = list(lat = latitude, lon = longitude, 
                         censusYear = 2020, format="json"))
   facility_tract_IDs[[i]] <- fromJSON(rawToChar(result$content))[[2]][["block_fips"]]
 }
-``` 
 
-## merge and do preliminary cleanup of all data 
-
-```{r}
-# extract all unique census tract ids from census block ids:
+# 3. extract all unique census tract ids from census block ids:
 facility_tracts <- lapply(facility_tract_IDs, substr, start = 1, stop = 11)
+# the total number of times each of the census tract names show up
+# could be taken to mean the number of facilities in each tract -- BUT...
 final_tracts <- table(unlist(facility_tracts))
 
-# note that three facilities are in 2 census tracts?: 
+# ...WARNING: there are three facilities are in 2 census tracts?: 
 ### lapply(facility_tract_IDs, unique)
 # not 100% sure how this is possible -- will look into it
 # for now, i included all tracts
 
-# create variable in demographics table for facility count in that tract
-# note that most will be "0"; this is kind of bad!
-# let's create a map to help explain the relationship better!
+# CHECK: make sure all of our facilities are in known tracts:
+# all(unlist(facility_tracts) %in% dem$geography) # GOOD
 
-dem <- demographics[-1, ] # remove california-wide stats 
-dem$Geography <- substr(dem$Geography, start = 10, stop = 20) # clean geoid
+# 4. create variables in demographics table for facility count in that tract
+dem$facility_binary <- dem$geography %in% unlist(facility_tracts)
+dem$facility_counts <- ifelse(dem$facility_binary, final_tracts[dem$geography], 0)
 
-# first, make sure all of our facilities are in known tracts: GOOD
-# all(unlist(facility_tracts) %in% dem$Geography)
+# 5. merge all data (dem, inc, edu) by the "geography" column; should be 737 census tracts
+# all(dem$geography %in% inc$geography)
+# all(dem$inc$geography %in% edu$geography)
+# any(c(duplicated(dem$geography), duplicated(inc$geography), duplicated(edu$geography)))
+dat <- dem %>% inner_join(inc) %>% inner_join(edu)
 
-# create variable in "dem", our final "full" dataset:
-dem$Facility_Binary <- dem$Geography %in% unlist(facility_tracts)
-dem$Facility_Counts <- ifelse(dem$Facility_Binary, final_tracts[dem$Geography], 0)
+write.csv(dat, "merged_data_v1.csv")
 ``` 
 
 
-## first looks: 
+## pre-preliminary look at the data: 
 
-in total, it looks like we have around 36 "successes" out of 737 census tracts; this will likely limit the number of variables that we can include in our model to about 2 to satisfy the "rule of thumb" 15 successful observations per variable. **honestly, i think this is fine. the papers that we're comparing to treated this mostly as an association study; they were really only looking at 1-2 variables in their logistic model anyway? i think??? let's talk to the professor! :)**
+in total, it looks like we have around 40 "successes" out of 737 census tracts; this will likely limit the number of variables that we can include in our model to about 2 to satisfy the "rule of thumb" 15 successful observations per variable. **dr. messer said the way to deal with this, generally, is to start by running one-by-one individual regressions with each variable of interest first, before doing anything else.**
 
 ```{r}
 # get success/failure (whether there's a facility in the tract) counts
-table(dem$Facility_Binary) # ~5% success rate -- pretty low
+table(dat$facility_binary)
+40/nrow(dem) # proportion of successes: ~5.4% success rate -- pretty low
 
 # get the # of counts in each "successful" tract: 
 final_tracts # one tract with 13: wow!
 
 # let's explore tract 06073008350 (tract 83.50), which has 13 facilities in it
-# this will print ALL AVAILABLE VARIABLES WHEN KNITTED!
-dem %>% filter(Geography == "06073008350")
+# WARNING: this will print ALL AVAILABLE VARIABLES WHEN KNITTED!
+dat %>% filter(geography == "06073008350")
 # population: 6228
-```
+``` 
 
 
-## NEXT STEPS: get variables of interest (aka create ONE or TWO race/socioeconomic variables w/ scores) 
-i know there's a lot of variables in our data set -- don't worry, we won't use them all! for now, we just have *every single one of the demographics for the census tract*. we will likely only be focusing on two: 
 
-1. median household income (or another proxy for socio-economic status) 
-2. percentage of non-white population (or another proxy for race/race-based distributions). 
 
-**our next job is to create these variables and see if we find an association!**
+
+```{r}
+
+
+
+``` 
+
+
+
+
+
+
+
+
+
+
+***NO LONGER USING: FACILITIES-LEVEL DATA (data set # 4)***:
+
+```{r, warning = F, echo = F}
+### get facilities data (70 emitting facilities in San Diego) - NO LONGER USING !!!
+# 1. toxics release inventory: facilities data (2023)
+# facilities <- read_excel("data/US_4_2023_excel.xlsx")
+# facilities_SD <- facilities %>% filter(`9. STATE` == "CA" & `8. COUNTY` == "SAN DIEGO")
+# confirmed no duplicates + and no NA values in either latitude or longitude information
+
+# understanding the relationship between form 4 and 1a: 
+# unique(emissions_SD$`9. TRIFD`) %in% unique(facilities_SD4$`4. TRIFD`) # 5 "missing" in facilities_SD4; no NA
+# unique(facilities_SD4$`4. TRIFD`) %in% unique(emissions_SD$`9. TRIFD`) # all included; no NA
+# note that all reported facilities are in the emissions data;
+# not all emitters are in our facilities data:
+
+# emissions_SD$`9. TRIFD`[miss_ids <- which( !(unique(emissions_SD$`9. TRIFD`) %in% unique(facilities_SD$`4. TRIFD`) ))]
+# emissions_SD$`10. FACILITY NAME`[miss_ids]
+
+# emissions_SD[emissions_SD$`9. TRIFD` == "92020CHMTR1150W", ]
+# "92020CHMTR1150W" %in% emissions_SD$`9. TRIFD`
+``` 
 
