@@ -1,0 +1,317 @@
+---
+title: "models"
+date: "2025-03-11"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(dplyr)
+```
+
+## get data 
+```{r}
+final_imputed <- read.csv("data/final-imputed.csv")
+final_subset <- read.csv(("data/final_subsetted_not_imputed.csv"))
+```
+
+```{r}
+library(table1)
+
+# population
+label(final_subset$total_pop) <- "Total Population"
+
+# race/ethnicity
+label(final_subset$people_of_color_pct) <- "% People of Color" # 100 - white only, non-hispanic
+label(final_subset$hispanic_pct) <- "% Hispanic/Latino"
+label(final_subset$black_only_pct) <- "% Black Only"
+label(final_subset$asian_only_pct) <- "% Asian Only"
+
+# socioeconomics
+label(final_subset$median_income) <- "Median Household Income"
+label(final_subset$renter_pct) <- "% of Housing Renter-Occupied"
+label(final_subset$bachelors_pct ) <- "% Population with Bachelors degree or higher"
+label(final_subset$female_bachelors_pct) <- "% Women with Bachelors degree or higher"
+
+label(final_subset$less_than_9th_pct ) <- "% Population with 9th Grade or less"
+label(final_subset$female_less_than_9th_pct) <- "% Women with 9th Grade or less"
+
+
+render_median <- function(x, ...) sprintf("<b>%0.1f</b> <i>(%0.1f-%0.1f)</i>", 
+                                          median(x, na.rm = T), 
+                                          min(x, na.rm = T), 
+                                          max(x, na.rm = T))
+
+
+table1(~ total_pop + people_of_color_pct + hispanic_pct + black_only_pct + asian_only_pct
+        + median_income + renter_pct + 
+         bachelors_pct + female_bachelors_pct + less_than_9th_pct + female_less_than_9th_pct | host, 
+       data = final_subset,
+       overall = FALSE,
+       render.continuous = render_median)
+
+```
+
+
+## pre-preliminary look at the data: 
+
+in total, it looks like we have around 40 "successes" out of 737 census tracts; this will likely limit the number of variables that we can include in our model to about 2 to satisfy the "rule of thumb" 15 successful observations per variable. **dr. messer said the way to deal with this, generally, is to start by running one-by-one individual regressions with each variable of interest first, before doing anything else.**
+
+```{r}
+# VARIABLES OF INTEREST: 
+# 1. "affected": binary variable (host vs. non-host = outside of 3km limit)
+# 2. "facility_buffer_counts": counts data for ZIP model
+
+# BINARY (affected)
+table(final_subset$host)
+# 487 non-hosts, 249 hosts
+# 249 / (487 + 249) = 0.3383152
+
+# COUNTS (facility_buffer_counts)
+# paper: 0 vs 1 vs 1+ was how the paper did counts analysis 
+# here we DO NOT separate into host/non-host.
+# if the buffer is in the tract at all, then we add it
+table(final_subset$facility_counts) # ALL
+#   0   1   2   3   4   5   6   7   8   9  10  11  17  24 
+# 357 124  74  62  27  34  27  15   6   4   3   1   1   1 
+
+table(ifelse(as.numeric(final_subset$host) == 2, final_subset$facility_counts, 0)) # ONLY HOSTS
+#   0   1   2   3   4   5   6   7   8   9  10  17  24 
+# 487  44  52  47  22  31  23  15   6   4   3   1   1 
+
+
+# let's explore tract 06073008350 (tract 83.50), which has 13 facilities in it
+# WARNING: this will print ALL AVAILABLE VARIABLES WHEN KNITTED!
+final_subset %>% filter(geo == "06073008350")
+# population: 6228
+
+### RENTER-OCCUPIED
+mu <- plyr::ddply(final_subset, "host", summarise, 
+            grp.mean = mean(as.numeric(renter_pct)))
+
+ggplot(final_subset, aes(x = as.numeric(renter_pct), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        color = factor(host)), 
+             linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of % of renter-occupied units, by facility presence") + 
+  xlab("% of renter-occupied units") + 
+  ylab("Count")
+
+### % POC
+mu <- plyr::ddply(final_subset, "host", summarise, 
+            grp.mean = mean(as.numeric(people_of_color_pct)))
+
+ggplot(final_subset, aes(x = as.numeric(people_of_color_pct), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        color = factor(host)), 
+             linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of % of POC, by facility presence") + 
+  xlab("% of POC") + 
+  ylab("Count")
+
+
+### MEDIAN INCOME
+# mu <- plyr::ddply(final, "host", summarise, 
+#             grp.mean = mean(as.numeric(median_income), 
+#             na.rm = T))
+# 
+# ggplot(final_subset, aes(x = as.numeric(median_income), 
+#                 fill = factor(host), 
+#                    color = factor(host))) + 
+#   geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+#   #geom_vline(data = mu, aes(xintercept = grp.mean, 
+#                         #color = factor(affected)), 
+#              #linetype = "dashed") +
+#   theme(legend.position = "top") + 
+#   labs(title = "Distribution of median household income, by facility presence") + 
+#   xlab("Median household income") + 
+#   ylab("Count")
+  
+
+### EDUCATION
+mu <- plyr::ddply(final, "host", summarise, 
+            grp.mean = mean(as.numeric(bachelors_pct), 
+            na.rm = T))
+
+ggplot(final_subset, aes(x = as.numeric(bachelors_pct), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        color = factor(host)), 
+             linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of % w/ bachelor's degree, by facility presence") + 
+  xlab("Median household income") + 
+  ylab("Count")
+
+as.numeric(dat$estimate_households_median_income_dollars)
+
+# pink: distribution of age for non-opioid users
+# blue: distribution of age for opioid users
+``` 
+
+
+## Logistic regression model 
+
+```{r}
+final_imputed$host <- as.factor(final_imputed$host)
+final_imputed$host <- relevel(final_imputed$host, ref = "Non-Host")
+
+summary(m1 <- glm(host ~
+                   # people_of_color_pct +
+                    #hispanic_pct +
+                    #black_only_pct +
+                    #asian_only_pct +
+                    median_income_scaled + 
+                    renter_pct +
+                    vacant_housing_pct +
+                   # bachelors_pct + 
+                    high_school_pct, 
+                    # female_bachelors_pct,
+             family = "binomial", 
+             data = final_imputed))
+
+
+m2_back <- step(m1, direction = "backward")
+summary(m2_back)
+
+
+summary(m11 <- glm(host ~
+                   # people_of_color_pct +
+                    #hispanic_pct +
+                    black_only_pct + 
+                    asian_only_pct+
+                    # white_only_non_hispanic_pct + 
+                    renter_pct + 
+                    # median_income +
+                    # bachelors_pct,
+                    # high_school_pct, 
+                    female_bachelors_pct,
+             family = "binomial", 
+             data = final_imputed[-c(116, 281), ])) 
+
+
+
+summary(m11 <- glm(host ~
+                   # people_of_color_pct +
+                    hispanic_pct +
+                    black_only_pct + 
+                    asian_only_pct +
+                    # white_only_non_hispanic_pct + 
+                    renter_pct + 
+                    # median_income +
+                    # bachelors_pct,
+                    # high_school_pct, 
+                    female_bachelors_pct,
+             family = "binomial", 
+             data = final_imputed)) 
+vif(m11)
+generalhoslem::logitgof(m11$y, fitted(m11))
+plot(m11, 4) # 116, 281
+
+
+# bonferroni correction
+# Define the predictors (all columns except response variable)
+predictors <- setdiff(names(final_imputed), 
+                      c("host", "geo", "facility_counts", "hosts_facility_counts", "total_pop"))
+
+# Initialize a data frame to store significant predictors
+significant_predictors <- data.frame(Predictor = character(), P_Value = numeric(), stringsAsFactors = FALSE)
+
+# Loop through each predictor to perform pairwise logistic regression
+for (predictor in predictors) {
+  # Fit logistic regression model
+  model <- glm(final_imputed$host ~ final_imputed[[predictor]], family = binomial)
+  
+  # Extract p-value
+  p_value <- summary(model)$coefficients[2, 4]  # Second row, fourth column (p-value for predictor)
+  
+  # Store only significant predictors (p < 0.3)
+  if (!is.na(p_value) && p_value < (0.05 / length(predictors))) {
+    significant_predictors <- rbind(significant_predictors, data.frame(Predictor = predictor, P_Value = p_value))
+  }
+}
+
+# Sort results by p-value
+significant_predictors <- significant_predictors[order(significant_predictors$P_Value), ]
+
+# Print significant predictors
+print(significant_predictors)
+
+m1_back <- step(m1)
+summary(m1_back)
+exp(confint(m1_back))
+
+# multicollinearity
+vif(m1_back)
+
+
+# model after pairwise regression: 
+summary(m3 <- glm(host ~
+                    renter_pct + 
+                    median_income + 
+                    high_school_pct + 
+                    black_only_pct + 
+                    asian_only_pct,
+             family = "binomial", 
+             data = final_imputed))
+
+AIC(m3)
+AIC(m1_back)
+
+cor(final_imputed$high_school_pct, final_imputed$median_income)
+
+vif(m3)
+
+
+library(generalhoslem)
+
+generalhoslem::logitgof(m1_back$y, fitted(m1_back))
+generalhoslem::logitgof(m3$y, fitted(m3))
+``` 
+
+
+## Zero-inflated model 
+
+Here, we're looking at the **counts** of buffers that make up in each of the host tracts. In doing 
+
+```{r}
+mean(final_subset$facility_counts[final_subset$facility_counts> 0])
+var(final_subset$facility_counts[final_subset$facility_counts > 0]) # overdispersed
+
+# how are these 12 NAs different than the rest of the population?
+sum(is.na(as.numeric(final$estimate_households_median_income_dollars)))
+
+# for some reason, "system is computationally singular" when our median income variable is included. why!!!
+
+
+
+
+library(pscl)
+summary(zi1 <- pscl::zeroinfl(hosts_facility_counts ~
+                   # median_income_scaled + 
+                    renter_pct +
+                    hispanic_pct +
+                    black_only_pct +
+                   asian_only_pct + 
+                    female_bachelors_pct |
+                   #median_income_scaled + 
+                   renter_pct +
+                   hispanic_pct +
+                    black_only_pct +
+                    asian_only_pct + 
+                    female_bachelors_pct,
+                      dist = "poisson",
+                      data = final_subset))
+```
