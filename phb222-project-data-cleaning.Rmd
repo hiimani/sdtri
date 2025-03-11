@@ -42,6 +42,8 @@ our articles of interest:
 
 5. fcc area and census conversion API: https://geo.fcc.gov/api/census/. i used this tutorial: https://www.dataquest.io/blog/r-api-tutorial/ 
 
+6.census tract boundaries created from: https://catalog.data.gov/dataset/tiger-line-shapefile-2022-county-san-diego-county-ca-topological-faces-polygons-with-all-geocod 
+
 
 *note about census blocks: "block_fips" is 15 digits b/c it includes an additional 4-digit "block" (more detailed) code. we only want the first 11 digits, which identify census tracts, bc census blocks may be too small of a unit to be useful for us (while census tracts usually aim to be populated in some way, many census blocks have no population whatsoever, which isn't helpful for us). in addition, our demographic info uses 11-digit census tract IDs, so we'll use tracts as our unit of measurement.*
 
@@ -139,20 +141,8 @@ emissions_SD <- emissions_SD %>% select(
                         x33_public_contact_email)
 ``` 
 
-### identify "superpolluters" -- FUTURE WORK 
-
-```{r}
-# check dimensions of new emission-level data set: 
-dim(emissions_SD) # 154 emissions, 44 variables about each
-
-# explore how many unique chemicals each of the facilities reported in 2023
-table(emissions_SD$x9_trifd) # 75 total facilities
-```
-
 ### create facility-level dataset to merge with census tract data 
-
 below, we create a new data set with facility information and merge it with census tract boundaries and tract-level demographics information:
-
 
 ```{r}
 # 1. create a new table JUST for facility information 
@@ -176,11 +166,20 @@ facilities_SD <- emissions_SD %>% select(x9_trifd,
   group_by(x9_trifd) %>% filter(x8_date_signed == max(x8_date_signed)) %>%
   ungroup() %>% distinct()
 
+
+
 # 2. prelim cleaning up of facilities-level data: 
+# make phone numbers into characters
+facilities_SD$x31_public_contact_phone <- as.character(facilities_SD$x31_public_contact_phone)
+
 # there's one facility with everything duplicated except for contact info: "91950HNSNG61W12"
-# we'll delete one version of this at random 
-# --? FUTURE WORK; NOT NEEDED FOR CENSUS TRACT MERGING
-# emissions_SD %>% filter(x9_trifd == "91950HNSNG61W12")
+# we'll combine the contact info and delete the duplicate
+facilities_SD[facilities_SD$x9_trifd == "91950HNSNG61W12", "x31_public_contact_phone"] <- as.data.frame(c("2067643026; 2069149764", "2067643026; 2069149764"))
+facilities_SD[facilities_SD$x9_trifd == "91950HNSNG61W12", "x33_public_contact_email"] <- as.data.frame(c("AAYRE@CALPORTLAND.COM; MHINCK@CALPORTLAND.COM", "AAYRE@CALPORTLAND.COM; MHINCK@CALPORTLAND.COM"))
+
+facilities_SD <- facilities_SD[!duplicated(facilities_SD), ]
+
+write_csv(facilities_SD, "facilities-for-mapping.csv")
 
 # emission recalculations/repeats 
 # (will deal with this later; for now i didn't care to clean this up)
@@ -193,22 +192,13 @@ table(emissions_SD$x90_revision_code_1)
 emissions_SD %>% filter(x9_trifd == "92113RCSND2295E")
 ``` 
 
-### get census tract/demographics information, merge, and clean 
 
-1. 2020 dicennial census demographics (*dem-dicennial-2020-sd.csv*): this contains race/ethnicity, gender, age, housing units, household information.
+### download and clean census tract/demographics data
 
-2. 2023 acs (american community survey) income/poverty (*income-acs2023.csv*): this contains median/mean income by households. even though census data is considered more accurate, especially at the tract level, income is only collected through the acs. (https://data.census.gov/table/ACSST1Y2023.S1901?q=Income%20and%20Poverty)
-
-3. 2023 acs (american community survey) educational attainment (*education-acs2023-sd.csv*): this file contains educational attainment or all census tract members ages 25+; male and female are distinct here (atlanta paper).
-
-**FUTURE WORK**: instead of designating a census tract as a "success" if the facility is in the tract, we could take a 1 mi buffer from each of the facilities. aka: "if a tri facility's 1mi buffer is within a census tract, then we include that tract as a census tract with a tri facility." i think this would help us get more "successes." 
-
-below, we isolate a few (~30) variables in our topics of interest; not all will be used or be considered variables of interest! 
-
+1. 2020 dicennial census demographics (*dem-dicennial-2020-sd.csv*): this contains race/ethnicity, gender, age, housing units, household information. 
 
 ```{r}
-# 1. read in all predictor data from census/acs data:
-# 1.1. read in demographics (2020 dicennial census, census.gov) data
+# 1. read in demographics (2020 dicennial census, census.gov) data
 demographics <- read.csv("data/dem-dicennial-2020-sd.csv") 
 dem <- demographics[-1, ] # remove california-wide stats 
 dem <- clean_names(dem)
@@ -220,24 +210,26 @@ dem <- dem %>% select(geography,
                count_race_total_population,
                
                # race/ethnicity information
-               percent_race_total_population_one_race_white,
+               percent_race_total_population_one_race_white, # one race white; INCLUDING hispanic or latino
+               percent_hispanic_or_latino_by_race_total_population_not_hispanic_or_latino_white_alone, # one race white; NOT HISPANIC
                percent_hispanic_or_latino_by_race_total_population_hispanic_or_latino,
-               percent_race_total_population_one_race_black_or_african_american, 
+               percent_race_total_population_one_race_black_or_african_american, # INCLUDING hispanic or latino
                percent_race_total_population_one_race_asian,
                percent_race_total_population_one_race_native_hawaiian_and_other_pacific_islander,
                percent_race_total_population_one_race_american_indian_and_alaska_native,
                percent_race_total_population_one_race_some_other_race,
                percent_race_total_population_two_or_more_races,
-               percent_total_races_tallied_1_total_races_tallied_black_or_african_american_alone_or_in_combination_with_one_or_more_other_races, 
-               percent_total_races_tallied_1_total_races_tallied_black_or_african_american_alone_or_in_combination_with_one_or_more_other_races, 
+               percent_total_races_tallied_1_total_races_tallied_black_or_african_american_alone_or_in_combination_with_one_or_more_other_races,
                percent_total_races_tallied_1_total_races_tallied_white_alone_or_in_combination_with_one_or_more_other_races,
                
                # housing information 
                percent_housing_occupancy_total_housing_units_vacant_housing_units, # (used in atlanta study)
                percent_housing_tenure_occupied_housing_units_renter_occupied_housing_units)
+```
 
-
-# 1.2. read in income (2023 ACS, census.gov) data
+2. 2023 acs (american community survey) income/poverty (*income-acs2023.csv*): this contains median/mean income by households. even though census data is considered more accurate, especially at the tract level, income is only collected through the acs. (https://data.census.gov/table/ACSST1Y2023.S1901?q=Income%20and%20Poverty) 
+```{r}
+# 2. read in income (2023 ACS, census.gov) data
 income <- read.csv("data/income-acs2023-sd.csv")
 names(income) <- income[1,] # make row 1 header
 inc <- income[-1, ] # remove first row with info
@@ -251,9 +243,15 @@ inc <- inc %>% select(geography,
                # income in dollars
                estimate_households_median_income_dollars,
                estimate_households_mean_income_dollars)
+```
 
 
-# 1.3 read in educational attainment (2023 ACS, census.gov) data
+3. 2023 acs (american community survey) educational attainment (*education-acs2023-sd.csv*): this file contains educational attainment or all census tract members ages 25+; male and female are distinct here (atlanta paper).
+
+below, we isolate a few (~30) variables in our topics of interest; **most will not be used or be considered variables of interest!** 
+
+```{r}
+# 3. read in educational attainment (2023 ACS, census.gov) data
 # this is a HUGE file (771 columns), MUST be pared down before merging
 education <- read.csv("data/education-acs2023-sd.csv")
 names(education) <- education[1,] # make row 1 header
@@ -283,45 +281,299 @@ edu <- edu %>% select(geography,
                # male and female median earnings in the last 12 months (2023)
                estimate_female_median_earnings_in_the_past_12_months_in_2023_inflation_adjusted_dollars_population_25_years_and_over_with_earnings, 
                estimate_male_median_earnings_in_the_past_12_months_in_2023_inflation_adjusted_dollars_population_25_years_and_over_with_earnings)
+``` 
 
 
-# 2. get census tracts for each of our facilities using lat/long coords!
-facility_tract_IDs <- vector("list", nrow(facilities_SD))
-for (i in 1:nrow(facilities_SD)) {
-  latitude <- facilities_SD$x47_latitude[i]
-  longitude <- facilities_SD$x48_longitude[i]
-  result <- GET("https://geo.fcc.gov/api/census/area", 
-           query = list(lat = latitude, lon = longitude, 
-                        censusYear = 2020, format="json"))
-  facility_tract_IDs[[i]] <- fromJSON(rawToChar(result$content))[[2]][["block_fips"]]
-}
+## KEY VARIABLES HERE: create buffers and create both key binary and counts variable 
 
-# 3. extract all unique census tract ids from census block ids:
-facility_tracts <- lapply(facility_tract_IDs, substr, start = 1, stop = 11)
-# the total number of times each of the census tract names show up
-# could be taken to mean the number of facilities in each tract -- BUT...
-final_tracts <- table(unlist(facility_tracts))
+```{r}
+## 1. read in facilities data as lat/long
+facilities <- st_as_sf(facilities_SD, 
+                       coords = c("x48_longitude", "x47_latitude"),
+                       crs = 4326)
 
-# ...WARNING: there are three facilities are in 2 census tracts?: 
-### lapply(facility_tract_IDs, unique)
-# not 100% sure how this is possible -- will look into it
-# for now, i included all tracts
+## b. convert/reproject CRS (coordinate reference system) to 32611
+## 32611 uses meters for accurate distance calculations, which we want
+## this system is good if we're focusing on a relatively small area in socal
+facilities <- st_transform(facilities, crs = 32611)
 
-# CHECK: make sure all of our facilities are in known tracts:
-# all(unlist(facility_tracts) %in% dem$geography) # GOOD
+## c. create 3km buffers around each of our facilities (3000m)
+## we choose 3km (~1.8mi) b/c literature says this is where effects are
+facility_buffers <- st_buffer(facilities, dist = 3000)
 
-# 4. create variables in demographics table for facility count in that tract
-dem$facility_binary <- dem$geography %in% unlist(facility_tracts)
-dem$facility_counts <- ifelse(dem$facility_binary, final_tracts[dem$geography], 0)
+buffer_union <- st_union(facility_buffers)
+# st_union(facility_buffers) merges the buffers to avoid double counting
+# we want to say "yes" to census tracts whose areas are *in aggregate* covered at least 50% by facility buffers (if there are multiple facilities nearby, we want to count them; but don't want to double count the area)
+# all(st_is_valid(buffer_union)) # TRUE
 
+
+## 2. read and process SD county census tract boundaries
+boundaries <- st_read("data/tl_2022_06073_faces/tl_2022_06073_faces.shp")
+# TRACTCE = last 6 digits of "geography" (tract ID) in dem, etc.
+# geometry = tract/block boundary polygons
+# dim(boundaries) # 57076; # many bounds per tract
+# unique(boundaries$TRACTCE) # CHECK: 737?; CORRECT
+
+## a. convert to the same CRS as our buffer information
+boundaries <- st_transform(boundaries, crs = st_crs(facility_buffers))
+# which(sapply(st_overlaps(boundaries), length) > 0) # no tracts overlap
+
+## b. make the boundaries tract-by-tract
+## -> calculate area of each of the tracts in our file
+##### boundaries$area <- st_area(boundaries)
+tracts <- boundaries %>%
+  group_by(TRACTCE) %>%
+  summarise(geometry = st_union(geometry)) # 737; GOOD
+
+# create area variable for each census tract
+tracts$total_area <- st_area(tracts)
+
+
+# 3. calculate % of each tract covered by joint facility buffers (buffer_join)
+## a. get intersection of census tract boundaries and 3km facility buffers
+intersections <- st_intersection(tracts, buffer_union)
+# unique(intersections$TRACTCE) # 380 census tracts have some overlap w/ buffers
+
+## b. get area of the intersections, then add up to get total per tract
+intersections$area_intersect <- st_area(intersections)
+
+## c. join total and intersected area with original CT polygons
+tracts <- tracts %>% left_join(intersections %>% st_drop_geometry(), by = "TRACTCE") %>% select(-total_area.y)
+
+## d. calculate area covered by buffer in each census tract
+tracts$coverage <- ifelse(is.na(tracts$area_intersect), 0, tracts$area_intersect / tracts$total_area.x)
+summary(tracts$coverage) # CHECK: nothing greater than 1; GOOD
+
+
+facilities$inside_tract <- lengths(st_within(facilities, facilities)) > 0
+
+### !!! CREATE OUR BINARY VARIABLE: "AFFECTED" !!! ###
+tracts <- tracts %>% mutate(affected = coverage >= 0.5)
+
+# e. plot results to make sure it makes sense: LOOKS GOOD
+# we also plotted on an arcgis map and that looks good too
+plot(st_geometry(tracts), col = ifelse(tracts$affected, "red", "grey"))
+plot(st_geometry(facility_buffers), border = "blue", add = TRUE)
+
+
+# 4. get # of total buffers that overlap census tract boundary
+intersections_facility <- st_intersects(tracts, facility_buffers)
+
+### !!! CREATE COUNTS VARIABLE: FACILITY_BUFFER_COUNTS !!! ### 
+tracts$facility_buffer_counts <- lengths(intersections_facility)
+hist(lengths(intersections_facility)) # looks good for a ZIP model?
+
+# 5. clean and write data
+tracts$geography <- paste0("06073", tracts$TRACTCE)
+tracts <- tracts[-737, ]
+
+# do not run if this already exist:
+### st_write(facility_buffers, "data/buffers/buffers.shp") # for mapping
+``` 
+
+
+## merge all data together 
+
+```{r}
 # 5. merge all data (dem, inc, edu) by the "geography" column; should be 737 census tracts
 # all(dem$geography %in% inc$geography)
-# all(dem$inc$geography %in% edu$geography)
-# any(c(duplicated(dem$geography), duplicated(inc$geography), duplicated(edu$geography)))
-dat <- dem %>% inner_join(inc) %>% inner_join(edu)
+# all(inc$geography %in% edu$geography)
+# all(edu$geography %in% dem$geography)
+# all(tracts$geography %in% edu$geography)
+# any(c(duplicated(dem$geography), duplicated(inc$geography), duplicated(edu$geography), duplicated(tracts$geography)))
+dat <- tracts %>% inner_join(dem) %>% inner_join(inc) %>% inner_join(edu)
 
-write.csv(dat, "merged_data_v1.csv")
+write.csv(final <- dat %>% st_drop_geometry(), "merged_data.csv") # NO geographies
+
+# write WITH geographies (do not run if folder already exists)
+# RUNS WITH WARNINGS?
+## st_write(tracts, "data/tracts/tracts.shp") # for mapping; no demographics
 ``` 
+
+
+## rename and transform variables 
+
+```{r}
+# create a named vector for renaming columns
+rename_dict <- c(
+  "TRACTCE" = "geo_6",
+  "total_area.x" = "total_area",
+  "area_intersect" = "intersect_area", 
+  "coverage" = "coverage", 
+  "affected" = "host",
+  "facility_buffer_counts" = "facility_counts",
+  "geography" = "geo",
+  "count_race_total_population" = "total_pop",
+  "percent_race_total_population_one_race_white" = "white_only_pct",
+  "percent_hispanic_or_latino_by_race_total_population_not_hispanic_or_latino_white_alone" = "white_only_non_hispanic_pct",
+  "percent_hispanic_or_latino_by_race_total_population_hispanic_or_latino" = "hispanic_pct",
+  "percent_race_total_population_one_race_black_or_african_american" = "black_only_pct",
+  "percent_race_total_population_one_race_asian" = "asian_only_pct",
+  "percent_race_total_population_one_race_native_hawaiian_and_other_pacific_islander" = "pacific_islander_only_pct",
+  "percent_race_total_population_one_race_american_indian_and_alaska_native" = "native_american_only_pct",
+  "percent_race_total_population_one_race_some_other_race" = "other_race_pct",
+  "percent_race_total_population_two_or_more_races" = "multi_race_pct",
+  "percent_total_races_tallied_1_total_races_tallied_black_or_african_american_alone_or_in_combination_with_one_or_more_other_races" = "black_combined_pct",
+  "percent_total_races_tallied_1_total_races_tallied_white_alone_or_in_combination_with_one_or_more_other_races" = "white_combined_pct",
+  "percent_housing_occupancy_total_housing_units_vacant_housing_units" = "vacant_housing_pct",
+  "percent_housing_tenure_occupied_housing_units_renter_occupied_housing_units" = "renter_pct",
+  "estimate_households_total" = "households_count",
+  "estimate_households_median_income_dollars" = "median_income",
+  "estimate_households_mean_income_dollars" = "mean_income",
+  "estimate_percent_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher" = "bachelors_pct",
+  "estimate_percent_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher" = "high_school_pct",
+  "estimate_percent_age_by_educational_attainment_population_25_years_and_over_graduate_or_professional_degree" = "graduate_pct",
+  "estimate_percent_age_by_educational_attainment_population_25_years_and_over_less_than_9th_grade" = "less_than_9th_pct",
+  "estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher" = "female_bachelors_pct",
+  "estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_graduate_or_professional_degree" = "female_graduate_pct",
+  "estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher" = "female_high_school_pct",
+  "estimate_percent_female_age_by_educational_attainment_population_25_years_and_over_less_than_9th_grade" = "female_less_than_9th_pct",
+  "estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher" = "male_bachelors_pct",
+  "estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_graduate_or_professional_degree" = "male_graduate_pct",
+  "estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher" = "male_high_school_pct",
+  "estimate_percent_male_age_by_educational_attainment_population_25_years_and_over_less_than_9th_grade" = "male_less_than_9th_pct",
+  "estimate_female_median_earnings_in_the_past_12_months_in_2023_inflation_adjusted_dollars_population_25_years_and_over_with_earnings" = "female_median_income",
+  "estimate_male_median_earnings_in_the_past_12_months_in_2023_inflation_adjusted_dollars_population_25_years_and_over_with_earnings" = "male_median_income"
+)
+
+# rename columns
+colnames(final) <- rename_dict[names(final)]
+
+# response variables
+final$host <- as.factor(final$host)
+table(final$host)
+levels(final$host) <- c("Non-Host", "Host")
+
+final$facility_counts <- as.numeric(final$facility_counts); table(final$facility_counts)
+
+names(final)
+
+# convert each variable (of interest only) manually
+final$white_only_pct <- as.numeric(final$white_only_pct)
+final$white_only_non_hispanic_pct <- as.numeric(final$white_only_non_hispanic_pct)
+final$hispanic_pct <- as.numeric(final$hispanic_pct)
+final$black_only_pct <- as.numeric(final$black_only_pct)
+final$asian_only_pct <- as.numeric(final$asian_only_pct)
+final$pacific_islander_only_pct <- as.numeric(final$pacific_islander_only_pct)
+final$native_american_only_pct <- as.numeric(final$native_american_only_pct)
+final$other_race_pct <- as.numeric(final$other_race_pct)
+
+final$vacant_housing_pct <- as.numeric(final$vacant_housing_pct)
+final$renter_pct <- as.numeric(final$renter_pct)
+
+# NAs in all of the below: 
+final$median_income <- as.numeric(final$median_income)
+final$female_median_income <- as.numeric(final$female_median_income)
+final$male_median_income <- as.numeric(final$male_median_income)
+
+final$bachelors_pct <- as.numeric(final$bachelors_pct)
+final$high_school_pct <- as.numeric(final$high_school_pct)
+final$graduate_pct <- as.numeric(final$graduate_pct)
+final$less_than_9th_pct <- as.numeric(final$less_than_9th_pct)
+
+final$female_bachelors_pct <- as.numeric(final$female_bachelors_pct)
+final$female_graduate_pct <- as.numeric(final$female_graduate_pct)
+final$female_high_school_pct <- as.numeric(final$female_high_school_pct)
+final$female_less_than_9th_pct <- as.numeric(final$female_less_than_9th_pct)
+
+final$male_bachelors_pct <- as.numeric(final$male_bachelors_pct)
+final$male_graduate_pct <- as.numeric(final$male_graduate_pct)
+final$male_high_school_pct <- as.numeric(final$male_high_school_pct)
+final$male_less_than_9th_pct <- as.numeric(final$male_less_than_9th_pct)
+
+final$hosts_facility_counts <- ifelse(final$host == "Host", final$facility_counts, 0)
+
+# create new data with only subset
+# create new data set with only variables of interest
+final_subset <- final[, c("geo", "host", "facility_counts", "hosts_facility_counts", "total_pop", 
+                      "white_only_pct", "white_only_non_hispanic_pct", "hispanic_pct", "black_only_pct", "asian_only_pct", 
+                      # "pacific_islander_pct",
+                      # "native_american_pct", "other_race_pct", 
+                      "vacant_housing_pct", "renter_pct",
+                      "median_income", "bachelors_pct", "high_school_pct", "graduate_pct", "less_than_9th_pct",
+                      "female_bachelors_pct", "female_graduate_pct", "female_high_school_pct", "female_less_than_9th_pct",
+                      "male_bachelors_pct", "male_graduate_pct", "male_high_school_pct", "male_less_than_9th_pct",
+                      "female_median_income", "male_median_income")] # 56 total NAs in variables of interest
+
+final_subset$people_of_color_pct <- 100 - final_subset$white_only_non_hispanic_pct
+
+# check structure and NAs
+str(final_subset)
+sum(is.na(final_subset))
+``` 
+
+## deal with missing values 
+
+```{r}
+# which columns have NAs?
+na_counts <- colSums(is.na(final_subset))
+na_summary <- na_counts[na_counts > 0]
+print(na_summary)
+
+# which rows have NAs?
+na_per_row <- rowSums(is.na(final_subset))
+num_obs_with_na <- sum(na_per_row > 0)
+print(paste("Number of observations (rows) with at least one NA:", num_obs_with_na))
+
+# Tabulate the number of NAs per observation
+na_distribution <- table(na_per_row)
+print(na_distribution)
+
+na_in_case_rows <- sum(rowSums(is.na(final_subset[final_subset$host == 1, ])) > 0)
+na_in_control_rows <- sum(rowSums(is.na(final_subset[final_subset$host == 0, ])) > 0)
+print(paste("Number of case rows (facility_exists = 1) containing NA:", na_in_case_rows))
+print(paste("Number of control rows (facility_exists = 0) containing NA:", na_in_control_rows))
+
+
+library(mice)
+imputed_data <- mice(final_subset, method = "pmm", m = 5)  # Predictive Mean Matching (pmm) for continuous variables
+final_imputed <- complete(imputed_data)
+sum(is.na(final_imputed))
+
+## WE HAVE TO GO BACK AND MAKE SURE THAT THESE ESTIMATES MAKE SENSE
+``` 
+
+
+## make table 1 with NON-IMPUTED data
+
+```{r}
+library(table1)
+
+# population
+label(final_subset$total_pop) <- "Total Population"
+
+# race/ethnicity
+label(final_subset$people_of_color_pct) <- "% People of Color" # 100 - white only, non-hispanic
+label(final_subset$hispanic_pct) <- "% Hispanic/Latino"
+label(final_subset$black_only_pct) <- "% Black Only"
+label(final_subset$asian_only_pct) <- "% Asian Only"
+
+# socioeconomics
+label(final_subset$median_income) <- "Median Household Income"
+label(final_subset$renter_pct) <- "% of Housing Renter-Occupied"
+label(final_subset$bachelors_pct ) <- "% Population with Bachelors degree or higher"
+label(final_subset$female_bachelors_pct) <- "% Women with Bachelors degree or higher"
+
+label(final_subset$less_than_9th_pct ) <- "% Population with 9th Grade or less"
+label(final_subset$female_less_than_9th_pct) <- "% Women with 9th Grade or less"
+
+
+render_median <- function(x, ...) sprintf("<b>%0.1f</b> <i>(%0.1f-%0.1f)</i>", 
+                                          median(x, na.rm = T), 
+                                          min(x, na.rm = T), 
+                                          max(x, na.rm = T))
+
+
+table1(~ total_pop + people_of_color_pct + hispanic_pct + black_only_pct + asian_only_pct
+        + median_income + renter_pct + 
+         bachelors_pct + female_bachelors_pct + less_than_9th_pct + female_less_than_9th_pct | host, 
+       data = final_subset,
+       overall = FALSE,
+       render.continuous = render_median)
+
+```
+
+
 
 
 ## pre-preliminary look at the data: 
@@ -329,33 +581,243 @@ write.csv(dat, "merged_data_v1.csv")
 in total, it looks like we have around 40 "successes" out of 737 census tracts; this will likely limit the number of variables that we can include in our model to about 2 to satisfy the "rule of thumb" 15 successful observations per variable. **dr. messer said the way to deal with this, generally, is to start by running one-by-one individual regressions with each variable of interest first, before doing anything else.**
 
 ```{r}
-# get success/failure (whether there's a facility in the tract) counts
-table(dat$facility_binary)
-40/nrow(dem) # proportion of successes: ~5.4% success rate -- pretty low
+# VARIABLES OF INTEREST: 
+# 1. "affected": binary variable (host vs. non-host = outside of 3km limit)
+# 2. "facility_buffer_counts": counts data for ZIP model
 
-# get the # of counts in each "successful" tract: 
-final_tracts # one tract with 13: wow!
+# BINARY (affected)
+table(final_subset$host)
+# 487 non-hosts, 249 hosts
+# 249 / (487 + 249) = 0.3383152
+
+# COUNTS (facility_buffer_counts)
+# paper: 0 vs 1 vs 1+ was how the paper did counts analysis 
+# here we DO NOT separate into host/non-host.
+# if the buffer is in the tract at all, then we add it
+table(final_subset$facility_counts) # ALL
+#   0   1   2   3   4   5   6   7   8   9  10  11  17  24 
+# 357 124  74  62  27  34  27  15   6   4   3   1   1   1 
+
+table(ifelse(as.numeric(final_subset$host) == 2, final_subset$facility_counts, 0)) # ONLY HOSTS
+#   0   1   2   3   4   5   6   7   8   9  10  17  24 
+# 487  44  52  47  22  31  23  15   6   4   3   1   1 
+
 
 # let's explore tract 06073008350 (tract 83.50), which has 13 facilities in it
 # WARNING: this will print ALL AVAILABLE VARIABLES WHEN KNITTED!
-dat %>% filter(geography == "06073008350")
+final_subset %>% filter(geo == "06073008350")
 # population: 6228
+
+### RENTER-OCCUPIED
+mu <- plyr::ddply(final_subset, "host", summarise, 
+            grp.mean = mean(as.numeric(renter_pct)))
+
+ggplot(final_subset, aes(x = as.numeric(renter_pct), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        color = factor(host)), 
+             linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of % of renter-occupied units, by facility presence") + 
+  xlab("% of renter-occupied units") + 
+  ylab("Count")
+
+### % POC
+mu <- plyr::ddply(final_subset, "host", summarise, 
+            grp.mean = mean(as.numeric(people_of_color_pct)))
+
+ggplot(final_subset, aes(x = as.numeric(people_of_color_pct), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        color = factor(host)), 
+             linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of % of POC, by facility presence") + 
+  xlab("% of POC") + 
+  ylab("Count")
+
+
+### MEDIAN INCOME
+mu <- plyr::ddply(final, "host", summarise, 
+            grp.mean = mean(as.numeric(median_income), 
+            na.rm = T))
+
+ggplot(final_subset, aes(x = as.numeric(median_income), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  #geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        #color = factor(affected)), 
+             #linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of median household income, by facility presence") + 
+  xlab("Median household income") + 
+  ylab("Count")
+  
+
+### EDUCATION
+mu <- plyr::ddply(final, "host", summarise, 
+            grp.mean = mean(as.numeric(bachelors_pct), 
+            na.rm = T))
+
+ggplot(final_subset, aes(x = as.numeric(bachelors_pct), 
+                fill = factor(host), 
+                   color = factor(host))) + 
+  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+  geom_vline(data = mu, aes(xintercept = grp.mean, 
+                        color = factor(host)), 
+             linetype = "dashed") +
+  theme(legend.position = "top") + 
+  labs(title = "Distribution of % w/ bachelor's degree, by facility presence") + 
+  xlab("Median household income") + 
+  ylab("Count")
+
+as.numeric(dat$estimate_households_median_income_dollars)
+
+# pink: distribution of age for non-opioid users
+# blue: distribution of age for opioid users
 ``` 
 
-
-
-
+## Logistic regression model 
 
 ```{r}
+names(final_imputed)
+
+summary(m1 <- glm(host ~
+                   # people_of_color_pct +
+                    #hispanic_pct +
+                    #black_only_pct +
+                    #asian_only_pct +
+                    renter_pct +
+                    vacant_housing_pct +
+                    median_income +
+                    bachelors_pct + 
+                    high_school_pct, 
+                    # female_bachelors_pct,
+             family = "binomial", 
+             data = final_imputed))
 
 
+m2_back <- step(m1, direction = "backward")
+summary(m2_back)
 
+
+summary(m11 <- glm(host ~
+                   # people_of_color_pct +
+                    #hispanic_pct +
+                    black_only_pct + 
+                    asian_only_pct+
+                    # white_only_non_hispanic_pct + 
+                    renter_pct + 
+                    # median_income +
+                    # bachelors_pct,
+                    # high_school_pct, 
+                    female_bachelors_pct,
+             family = "binomial", 
+             data = final_imputed[-c(116, 281), ]))  
+
+vif(m11)
+generalhoslem::logitgof(m11$y, fitted(m11))
+plot(m11, 4) # 116, 281
+
+final_imputed[79, ]
+
+exp(-0.0874588 )
+
+# bonferroni correction
+# Define the predictors (all columns except response variable)
+predictors <- setdiff(names(final_imputed), 
+                      c("host", "geo", "facility_counts", "hosts_facility_counts", "total_pop"))
+
+# Initialize a data frame to store significant predictors
+significant_predictors <- data.frame(Predictor = character(), P_Value = numeric(), stringsAsFactors = FALSE)
+
+# Loop through each predictor to perform pairwise logistic regression
+for (predictor in predictors) {
+  # Fit logistic regression model
+  model <- glm(final_imputed$host ~ final_imputed[[predictor]], family = binomial)
+  
+  # Extract p-value
+  p_value <- summary(model)$coefficients[2, 4]  # Second row, fourth column (p-value for predictor)
+  
+  # Store only significant predictors (p < 0.3)
+  if (!is.na(p_value) && p_value < (0.05 / length(predictors))) {
+    significant_predictors <- rbind(significant_predictors, data.frame(Predictor = predictor, P_Value = p_value))
+  }
+}
+
+# Sort results by p-value
+significant_predictors <- significant_predictors[order(significant_predictors$P_Value), ]
+
+# Print significant predictors
+print(significant_predictors)
+
+m1_back <- step(m1)
+summary(m1_back)
+exp(confint(m1_back))
+
+# multicollinearity
+vif(m1_back)
+
+
+# model after pairwise regression: 
+summary(m3 <- glm(host ~
+                    renter_pct + 
+                    median_income + 
+                    high_school_pct + 
+                    black_only_pct + 
+                    asian_only_pct,
+             family = "binomial", 
+             data = final_imputed))
+
+AIC(m3)
+AIC(m1_back)
+
+cor(final_imputed$high_school_pct, final_imputed$median_income)
+
+vif(m3)
+
+
+library(generalhoslem)
+
+generalhoslem::logitgof(m1_back$y, fitted(m1_back))
+generalhoslem::logitgof(m3$y, fitted(m3))
 ``` 
 
+## Zero-inflated model 
 
+Here, we're looking at the **counts** of buffers that make up in each of the host tracts. In doing 
 
+```{r}
+mean(final_subset$facility_counts[final_subset$facility_counts> 0])
+var(final_subset$facility_counts[final_subset$facility_counts > 0]) # overdispersed
 
+# how are these 12 NAs different than the rest of the population?
+sum(is.na(as.numeric(final$estimate_households_median_income_dollars)))
 
+# for some reason, "system is computationally singular" when our median income variable is included. why!!!
+
+library(pscl)
+summary(zi1 <- pscl::zeroinfl(hosts_facility_counts ~ 
+                    renter_pct +
+                    hispanic_pct +
+                    black_only_pct +
+                    asian_only_pct + 
+                    female_bachelors_pct |
+                    renter_pct +
+                    hispanic_pct +
+                    black_only_pct +
+                    asian_only_pct + 
+                    female_bachelors_pct,
+                      dist = "negbin",
+                      data = final_imputed))
+
+sum(dnbinom(0, size = zi1$theta, mu = predict(zi1, type = "count")))
+```
 
 
 
@@ -383,3 +845,45 @@ dat %>% filter(geography == "06073008350")
 # "92020CHMTR1150W" %in% emissions_SD$`9. TRIFD`
 ``` 
 
+### identify "superpolluters" -- FUTURE WORK 
+
+```{r}
+# check dimensions of new emission-level data set: 
+dim(emissions_SD) # 154 emissions, 44 variables about each
+
+# explore how many unique chemicals each of the facilities reported in 2023
+table(emissions_SD$x9_trifd) # 75 total facilities
+```
+
+### REMOVED: OLD WAY OF GETTING FACILITY PRESENCE: (ctr-shift-c to uncomment) 
+
+```{r}
+# # 2. get census tracts for each of our facilities using lat/long coords!
+# facility_tract_IDs <- vector("list", nrow(facilities_SD))
+# for (i in 1:nrow(facilities_SD)) {
+#   latitude <- facilities_SD$x47_latitude[i]
+#   longitude <- facilities_SD$x48_longitude[i]
+#   result <- GET("https://geo.fcc.gov/api/census/area", 
+#            query = list(lat = latitude, lon = longitude, 
+#                         censusYear = 2020, format="json"))
+#   facility_tract_IDs[[i]] <- fromJSON(rawToChar(result$content))[[2]][["block_fips"]]
+# }
+# 
+# # 3. extract all unique census tract ids from census block ids:
+# facility_tracts <- lapply(facility_tract_IDs, substr, start = 1, stop = 11)
+# # the total number of times each of the census tract names show up
+# # could be taken to mean the number of facilities in each tract -- BUT...
+# final_tracts <- table(unlist(facility_tracts))
+# 
+# # ...WARNING: there are three facilities are in 2 census tracts?: 
+# ### lapply(facility_tract_IDs, unique)
+# # not 100% sure how this is possible -- will look into it
+# # for now, i included all tracts
+# 
+# # CHECK: make sure all of our facilities are in known tracts:
+# # all(unlist(facility_tracts) %in% dem$geography) # GOOD
+# 
+# # 4. create variables in demographics table for facility count in that tract
+# dem$facility_binary <- dem$geography %in% unlist(facility_tracts)
+# dem$facility_counts <- ifelse(dem$facility_binary, final_tracts[dem$geography], 0)
+```
