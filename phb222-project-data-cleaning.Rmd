@@ -8,6 +8,7 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
+library(dplyr)
 
 library(readxl) # read in excel data (facilities info)
 library(janitor) # to clean up variable names automatically
@@ -92,7 +93,7 @@ emissions_SD <- clean_names(emissions_SD)
 # no x190_total_on_site_landfills
 # no x187_total_on_site_underground_injection
 
-emissions_SD <- emissions_SD %>% select(
+emissions_SD <- emissions_SD %>% dplyr::select(
                         # facility information:
                         x9_trifd, 
                         x1_form_type,
@@ -146,7 +147,7 @@ below, we create a new data set with facility information and merge it with cens
 
 ```{r}
 # 1. create a new table JUST for facility information 
-facilities_SD <- emissions_SD %>% select(x9_trifd, 
+facilities_SD <- emissions_SD %>% dplyr::select(x9_trifd, 
                         #x1_form_type,
                         x90_revision_code_1,
                         x10_facility_name,
@@ -205,7 +206,7 @@ dem <- clean_names(dem)
 dem$geography <- substr(dem$geography, start = 10, stop = 20) 
 # clean census tract ID for easy merging
 
-dem <- dem %>% select(geography,
+dem <- dem %>% dplyr::select(geography,
                # total population
                count_race_total_population,
                
@@ -236,7 +237,7 @@ inc <- income[-1, ] # remove first row with info
 inc <- clean_names(inc)
 inc$geography <- substr(inc$geography, start = 10, stop = 20)
 
-inc <- inc %>% select(geography,
+inc <- inc %>% dplyr::select(geography,
                # total # of households
                estimate_households_total,
                
@@ -259,7 +260,7 @@ edu <- education[-1, ] # remove first row with info
 edu <- clean_names(edu)
 edu$geography <- substr(edu$geography, start = 10, stop = 20)
 
-edu <- edu %>% select(geography,
+edu <- edu %>% dplyr::select(geography,
                # total population educational attainment
                estimate_percent_age_by_educational_attainment_population_25_years_and_over_bachelors_degree_or_higher, 
                estimate_percent_age_by_educational_attainment_population_25_years_and_over_high_school_graduate_or_higher, 
@@ -338,7 +339,7 @@ intersections <- st_intersection(tracts, buffer_union)
 intersections$area_intersect <- st_area(intersections)
 
 ## c. join total and intersected area with original CT polygons
-tracts <- tracts %>% left_join(intersections %>% st_drop_geometry(), by = "TRACTCE") %>% select(-total_area.y)
+tracts <- tracts %>% left_join(intersections %>% st_drop_geometry(), by = "TRACTCE") %>% dplyr::select(-total_area.y)
 
 ## d. calculate area covered by buffer in each census tract
 tracts$coverage <- ifelse(is.na(tracts$area_intersect), 0, tracts$area_intersect / tracts$total_area.x)
@@ -383,7 +384,7 @@ tracts <- tracts[-737, ]
 # any(c(duplicated(dem$geography), duplicated(inc$geography), duplicated(edu$geography), duplicated(tracts$geography)))
 dat <- tracts %>% inner_join(dem) %>% inner_join(inc) %>% inner_join(edu)
 
-write.csv(final <- dat %>% st_drop_geometry(), "merged_data.csv") # NO geographies
+final <- dat %>% st_drop_geometry() # NO geographies
 
 # write WITH geographies (do not run if folder already exists)
 # RUNS WITH WARNINGS?
@@ -500,6 +501,10 @@ final_subset$people_of_color_pct <- 100 - final_subset$white_only_non_hispanic_p
 # check structure and NAs
 str(final_subset)
 sum(is.na(final_subset))
+
+
+
+write_csv(final_subset, "data/final_subsetted_not_imputed.csv")
 ``` 
 
 ## deal with missing values 
@@ -642,21 +647,21 @@ ggplot(final_subset, aes(x = as.numeric(people_of_color_pct),
 
 
 ### MEDIAN INCOME
-mu <- plyr::ddply(final, "host", summarise, 
-            grp.mean = mean(as.numeric(median_income), 
-            na.rm = T))
-
-ggplot(final_subset, aes(x = as.numeric(median_income), 
-                fill = factor(host), 
-                   color = factor(host))) + 
-  geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
-  #geom_vline(data = mu, aes(xintercept = grp.mean, 
-                        #color = factor(affected)), 
-             #linetype = "dashed") +
-  theme(legend.position = "top") + 
-  labs(title = "Distribution of median household income, by facility presence") + 
-  xlab("Median household income") + 
-  ylab("Count")
+# mu <- plyr::ddply(final, "host", summarise, 
+#             grp.mean = mean(as.numeric(median_income), 
+#             na.rm = T))
+# 
+# ggplot(final_subset, aes(x = as.numeric(median_income), 
+#                 fill = factor(host), 
+#                    color = factor(host))) + 
+#   geom_histogram(position = "identity", alpha = 0.5, binwidth = 1) + 
+#   #geom_vline(data = mu, aes(xintercept = grp.mean, 
+#                         #color = factor(affected)), 
+#              #linetype = "dashed") +
+#   theme(legend.position = "top") + 
+#   labs(title = "Distribution of median household income, by facility presence") + 
+#   xlab("Median household income") + 
+#   ylab("Count")
   
 
 ### EDUCATION
